@@ -27,6 +27,21 @@ use Cake\Http\MiddlewareQueue;
 use Cake\ORM\Locator\TableLocator;
 use Cake\Routing\Middleware\AssetMiddleware;
 use Cake\Routing\Middleware\RoutingMiddleware;
+use Authentication\AuthenticationServiceProviderInterface;
+use Authentication\Middleware\AuthenticationMiddleware;
+use Authentication\AuthenticationService;
+use Authentication\AuthenticationServiceInterface;
+use Psr\Http\Message\ServerRequestInterface;
+use Cake\Routing\Router;
+use Cake\Utility\Security;
+use Authorization\AuthorizationService;
+use Authorization\AuthorizationServiceInterface;
+use Authorization\AuthorizationServiceProviderInterface;
+use Authorization\Middleware\AuthorizationMiddleware;
+use Authorization\Policy\OrmResolver;
+use App\Model\Table\LikesTable;
+use App\Policy\LikePolicy;
+use Authorization\Policy\MapResolver;
 
 /**
  * Application setup class.
@@ -34,7 +49,7 @@ use Cake\Routing\Middleware\RoutingMiddleware;
  * This defines the bootstrapping logic and middleware layers you
  * want to use in your application.
  */
-class Application extends BaseApplication
+class Application extends BaseApplication implements AuthenticationServiceProviderInterface, AuthorizationServiceProviderInterface
 {
     /**
      * Load all the application configuration and bootstrap logic.
@@ -45,6 +60,8 @@ class Application extends BaseApplication
     {
         // Call parent to load bootstrap from files.
         parent::bootstrap();
+        $this->addPlugin('Authentication');
+        $this->addPlugin('Authorization');
 
         if (PHP_SAPI === 'cli') {
             $this->bootstrapCli();
@@ -93,7 +110,9 @@ class Application extends BaseApplication
             // Parse various types of encoded request bodies so that they are
             // available as array through $request->getData()
             // https://book.cakephp.org/4/en/controllers/middleware.html#body-parser-middleware
-            ->add(new BodyParserMiddleware());
+            ->add(new BodyParserMiddleware())
+            ->add(new AuthenticationMiddleware($this))
+            ->add(new AuthorizationMiddleware($this));
 
             // Cross Site Request Forgery (CSRF) Protection Middleware
             // https://book.cakephp.org/4/en/security/csrf.html#cross-site-request-forgery-csrf-middleware
@@ -102,6 +121,75 @@ class Application extends BaseApplication
             // ]));
 
         return $middlewareQueue;
+    }
+
+    public function getAuthenticationService(ServerRequestInterface $request): AuthenticationServiceInterface
+    {
+        $authenticationService = new AuthenticationService([
+            'unauthenticatedRedirect' => Router::url('/users/login'),
+            'queryParam' => 'redirect',
+        ]);
+
+        // Load identifiers, ensure we check email and password fields
+        $authenticationService->loadIdentifier('Authentication.Password', [
+            'fields' => [
+                'username' => 'email',
+                'password' => 'password',
+            ]
+        ]);
+
+        // Load the authenticators, you want session first
+        $authenticationService->loadAuthenticator('Authentication.Session');
+        // Configure form data check to pick email and password
+        $authenticationService->loadAuthenticator('Authentication.Form', [
+            'fields' => [
+                'username' => 'email',
+                'password' => 'password',
+            ],
+            'loginUrl' => Router::url('/users/login'),
+        ]);
+
+        $authenticationService->loadIdentifier('Authentication.JwtSubject', [
+            'resolver' => [
+                'className' => 'Authentication.Orm',
+                // Specify the user model and fields
+                'userModel' => 'Users',
+                'fields' => [
+                    'username' => 'id'
+                ],
+            ],
+        ]);
+
+        $authenticationService->loadAuthenticator('Authentication.Jwt', [
+            'returnPayload' => false,
+            'secretKey' => Security::getSalt(),
+            'algorithms' => ['HS256'],
+            'header' => 'Authorization',
+            'prefix' => 'Bearer ',
+            'queryParam' => 'token',
+        ]);
+
+        $authenticationService->loadAuthenticator('Authentication.Token', [
+            'header' => 'Authorization',
+            'queryParam' => 'token',
+            'tokenPrefix' => 'Bearer',
+        ]);
+
+        return $authenticationService;
+    }
+
+    public function getAuthorizationService(ServerRequestInterface $request): AuthorizationServiceInterface
+    {
+        $ormResolver = new OrmResolver();
+        $mapResolver = new MapResolver();
+    
+        // Map the LikesTable to the LikesPolicy
+        $mapResolver->map(LikesTable::class, LikePolicy::class);
+    
+        // Now, use $mapResolver instead of $ormResolver for the AuthorizationService
+        $resolverCollection = new \Authorization\Policy\ResolverCollection([$mapResolver, $ormResolver]);
+
+        return new AuthorizationService($resolverCollection);
     }
 
     /**

@@ -66,6 +66,16 @@ return function (RouteBuilder $routes): void {
 
         $builder->resources('Articles');
 
+        $builder->post('likes/:articleId', ['controller' => 'Likes', 'action' => 'like'])
+           ->setPatterns(['articleId' => '\d+'])
+           ->setPass(['articleId']);
+
+        $builder->get('articles/:articleId/like_count', ['controller' => 'Articles', 'action' => 'likeCount'])
+           ->setPatterns(['articleId' => '\d+'])
+           ->setPass(['articleId']);
+
+         $builder->post('/logout', ['controller' => 'Users', 'action' => 'logout']);
+
         /*
          * Connect catchall routes for all controllers.
          *
